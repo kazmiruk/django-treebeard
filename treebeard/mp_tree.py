@@ -259,9 +259,12 @@ class MP_AddRootHandler(MP_AddHandler):
         self.kwargs = kwargs
 
     def process(self):
+        object_id = self.kwargs.get(MP_Node.OBJECT_NAME)
+        if not object_id:
+            raise KeyError('There is no object id')
 
         # do we have a root node already?
-        last_root = self.cls.get_last_root_node()
+        last_root = self.cls.get_last_root_node(object_id)
 
         if last_root and last_root.node_order_by:
             # there are root nodes and node_order_by has been set
@@ -506,12 +509,14 @@ class MP_MoveHandler(MP_ComplexAddMoveHandler):
 class MP_Node(Node):
     """Abstract model to create your own Materialized Path Trees."""
 
+    OBJECT_NAME = 'object_id'
+
     steplen = 4
     alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     node_order_by = []
-    path = models.CharField(max_length=255, unique=True)
-    depth = models.PositiveIntegerField()
-    numchild = models.PositiveIntegerField(default=0)
+    path = models.CharField(max_length=255)
+    depth = models.PositiveSmallIntegerField()
+    numchild = models.PositiveSmallIntegerField(default=0)
     gap = 1
 
     objects = MP_NodeManager()
@@ -538,6 +543,7 @@ class MP_Node(Node):
         Adds a root node to the tree.
 
         :raise PathOverflow: when no more root objects can be added
+        :raise KeyError: when kwargs doesn't contain object_id
         """
         return MP_AddRootHandler(cls, **kwargs).process()
 
@@ -743,9 +749,9 @@ class MP_Node(Node):
                                   depth__gte=parent.depth)
 
     @classmethod
-    def get_root_nodes(cls):
+    def get_root_nodes(cls, object_id=None):
         """:returns: A queryset containing the root nodes in the tree."""
-        return cls.objects.filter(depth=1)
+        return cls.objects.filter(depth=1, object_id=object_id)
 
     @classmethod
     def get_descendants_group_count(cls, parent=None):

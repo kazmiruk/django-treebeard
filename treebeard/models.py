@@ -137,7 +137,7 @@ class Node(models.Model):
         raise NotImplementedError
 
     @classmethod
-    def get_root_nodes(cls):  # pragma: no cover
+    def get_root_nodes(cls, object_id=None):  # pragma: no cover
         """:returns: A queryset containing the root nodes in the tree."""
         raise NotImplementedError
 
@@ -154,14 +154,14 @@ class Node(models.Model):
             return None
 
     @classmethod
-    def get_last_root_node(cls):
+    def get_last_root_node(cls, object_id=None):
         """
         :returns:
 
             The last root node in the tree or ``None`` if it is empty.
         """
         try:
-            return cls.get_root_nodes().reverse()[0]
+            return cls.get_root_nodes(object_id).reverse()[0]
         except IndexError:
             return None
 
