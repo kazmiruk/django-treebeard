@@ -69,7 +69,7 @@ class MP_NodeQuerySet(models.query.QuerySet):
         # Django will handle this as a SELECT and then a DELETE of
         # ids, and will deal with removing related objects
         if toremove:
-            qset = self.model.objects.filter(reduce(operator.or_, toremove))
+            qset = self.model.objects.filter(reduce(operator.or_, toremove), object_id=self.object_id)
             super(MP_NodeQuerySet, qset).delete()
         transaction.commit_unless_managed()
 
@@ -263,6 +263,9 @@ class MP_AddRootHandler(MP_AddHandler):
         if not object_id:
             raise KeyError('There is no object id')
 
+        if not self.kwargs.get('id'):
+            self.kwargs['id'] = self.cls.generate_id()
+
         # do we have a root node already?
         last_root = self.cls.get_last_root_node(object_id)
 
@@ -295,6 +298,9 @@ class MP_AddChildHandler(MP_AddHandler):
         self.kwargs = kwargs
 
     def process(self):
+        if not self.kwargs.get('id'):
+            self.kwargs['id'] = self.node_cls.generate_id()
+
         if self.node_cls.node_order_by and not self.node.is_leaf():
             # there are child nodes and node_order_by has been set
             # delegate sorted insertion to add_sibling
@@ -323,7 +329,7 @@ class MP_AddChildHandler(MP_AddHandler):
         newobj._cached_parent_obj = self.node
 
         self.node_cls.objects.filter(
-            path=self.node.path).update(numchild=F('numchild')+1)
+            path=self.node.path, object_id=self.node.object_id).update(numchild=F('numchild')+1)
 
         # we increase the numchild value of the object in memory
         self.node.numchild += 1
@@ -509,6 +515,7 @@ class MP_MoveHandler(MP_ComplexAddMoveHandler):
 class MP_Node(Node):
     """Abstract model to create your own Materialized Path Trees."""
 
+    # TODO: Get object field by this name?
     OBJECT_NAME = 'object_id'
 
     steplen = 4
@@ -540,7 +547,8 @@ class MP_Node(Node):
     @classmethod
     def add_root(cls, **kwargs):
         """
-        Adds a root node to the tree.
+        Adds a root node to the tree. If there is no sharded id,
+        it will be generated with 'generate_id' class method
 
         :raise PathOverflow: when no more root objects can be added
         :raise KeyError: when kwargs doesn't contain object_id
@@ -733,7 +741,7 @@ class MP_Node(Node):
             transaction.commit_unless_managed()
 
     @classmethod
-    def get_tree(cls, parent=None):
+    def get_tree(cls, object_id, parent=None):
         """
         :returns:
 
@@ -746,7 +754,8 @@ class MP_Node(Node):
         if parent.is_leaf():
             return cls.objects.filter(pk=parent.pk)
         return cls.objects.filter(path__startswith=parent.path,
-                                  depth__gte=parent.depth)
+                                  depth__gte=parent.depth,
+                                  object_id=object_id)
 
     @classmethod
     def get_root_nodes(cls, object_id=None):
@@ -825,7 +834,7 @@ class MP_Node(Node):
         :returns: A queryset of all the node's siblings, including the node
             itself.
         """
-        qset = self.__class__.objects.filter(depth=self.depth)
+        qset = self.__class__.objects.filter(depth=self.depth, object_id=self.object_id)
         if self.depth > 1:
             # making sure the non-root nodes share a parent
             parentpath = self._get_basepath(self.path, self.depth - 1)
@@ -839,7 +848,8 @@ class MP_Node(Node):
             return self.__class__.objects.none()
         return self.__class__.objects.filter(
             depth=self.depth + 1,
-            path__range=self._get_children_path_interval(self.path)
+            path__range=self._get_children_path_interval(self.path),
+            object_id=self.object_id,
         )
 
     def get_next_sibling(self):
@@ -857,7 +867,7 @@ class MP_Node(Node):
         :returns: A queryset of all the node's descendants as DFS, doesn't
             include the node itself
         """
-        return self.__class__.get_tree(self).exclude(pk=self.pk)
+        return self.__class__.get_tree(self.object_id, self).exclude(pk=self.pk)
 
     def get_prev_sibling(self):
         """
@@ -938,7 +948,7 @@ class MP_Node(Node):
             self.path[0:pos]
             for pos in range(0, len(self.path), self.steplen)[1:]
         ]
-        return self.__class__.objects.filter(path__in=paths).order_by('depth')
+        return self.__class__.objects.filter(path__in=paths, object_id=self.object_id).order_by('depth')
 
     def get_parent(self, update=False):
         """
