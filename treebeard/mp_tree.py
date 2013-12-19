@@ -301,6 +301,9 @@ class MP_AddChildHandler(MP_AddHandler):
         if not self.kwargs.get('id'):
             self.kwargs['id'] = self.node_cls.generate_id()
 
+        if self.node.object_id != self.kwargs.get('object_id', False):
+            raise KeyError("The object_id for parent and child must be the same")
+
         if self.node_cls.node_order_by and not self.node.is_leaf():
             # there are child nodes and node_order_by has been set
             # delegate sorted insertion to add_sibling
@@ -760,7 +763,10 @@ class MP_Node(Node):
     @classmethod
     def get_root_nodes(cls, object_id=None):
         """:returns: A queryset containing the root nodes in the tree."""
-        return cls.objects.filter(depth=1, object_id=object_id)
+        if object_id:
+            return cls.objects.filter(depth=1, object_id=object_id)
+        else:
+            return cls.objects.filter(depth=1)
 
     @classmethod
     def get_descendants_group_count(cls, parent=None):
