@@ -7,7 +7,7 @@ if sys.version_info >= (3, 0):
     from functools import reduce
 
 from django.core import serializers
-from django.db import models, transaction, connection
+from django.db import models, transaction, connection, IntegrityError
 from django.db.models import F, Q
 from django.utils.translation import ugettext_noop as _
 
@@ -69,7 +69,7 @@ class MP_NodeQuerySet(models.query.QuerySet):
         # Django will handle this as a SELECT and then a DELETE of
         # ids, and will deal with removing related objects
         if toremove:
-            qset = self.model.objects.filter(reduce(operator.or_, toremove), object_id=self.object_id)
+            qset = self.model.objects.filter(reduce(operator.or_, toremove))
             super(MP_NodeQuerySet, qset).delete()
         transaction.commit_unless_managed()
 
@@ -532,6 +532,13 @@ class MP_Node(Node):
     objects = MP_NodeManager()
 
     numconv_obj_ = None
+
+    def save(self, *args, **kwargs):
+        try:
+            return super(MP_Node, self).save(*args, **kwargs)
+        except IntegrityError as ex:
+            self.path = self._inc_path()
+            self.save(*args, **kwargs)
 
     @classmethod
     def _int2str(cls, num):
