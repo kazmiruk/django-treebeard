@@ -263,9 +263,6 @@ class MP_AddRootHandler(MP_AddHandler):
         if not object_id:
             raise KeyError('There is no object id')
 
-        if not self.kwargs.get('id'):
-            self.kwargs['id'] = self.cls.generate_id()
-
         # do we have a root node already?
         last_root = self.cls.get_last_root_node(object_id)
 
@@ -298,9 +295,6 @@ class MP_AddChildHandler(MP_AddHandler):
         self.kwargs = kwargs
 
     def process(self):
-        if not self.kwargs.get('id'):
-            self.kwargs['id'] = self.node_cls.generate_id()
-
         if self.node.object_id != self.kwargs.get('object_id', False):
             raise KeyError("The object_id for parent and child must be the same")
 
