@@ -754,7 +754,7 @@ class MP_Node(Node):
         """
         if parent is None:
             # return the entire tree
-            return cls.objects.all()
+            return cls.objects.filter(object_id=object_id)
         if parent.is_leaf():
             return cls.objects.filter(pk=parent.pk)
         return cls.objects.filter(path__startswith=parent.path,
@@ -973,7 +973,10 @@ class MP_Node(Node):
         except AttributeError:
             pass
         parentpath = self._get_basepath(self.path, depth - 1)
-        self._cached_parent_obj = self.__class__.objects.get(path=parentpath)
+        self._cached_parent_obj = self.__class__.objects.get(
+            path=parentpath,
+            object_id=self.object_id,
+        )
         return self._cached_parent_obj
 
     def move(self, target, pos=None):
