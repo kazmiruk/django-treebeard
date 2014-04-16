@@ -876,6 +876,13 @@ class MP_Node(Node):
         """
         return self.__class__.get_tree(self.object_id, self).exclude(pk=self.pk)
 
+    def get_descendants_inc(self):
+        """
+        :returns: A queryset of all the node's descendants as DFS,
+            include the node itself
+        """
+        return self.__class__.get_tree(self.object_id, self)
+
     def get_prev_sibling(self):
         """
         :returns: The previous node's sibling, or None if it was the leftmost
