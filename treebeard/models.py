@@ -7,7 +7,7 @@ if sys.version_info >= (3, 0):
     from functools import reduce
 
 from django.db.models import Q
-from django.db import models, transaction, router, connections
+from django.db import models, router, connections
 
 from treebeard.exceptions import InvalidPosition, MissingNodeOrderBy
 
@@ -27,26 +27,36 @@ class Node(models.Model):
 
         :param \*\*kwargs: object creation data that will be passed to the
             inherited Node model
+        :param instance: Instead of passing object creation data, you can
+            pass an already-constructed (but not yet saved) model instance to
+            be inserted into the tree.
 
         :returns: the created node object. It will be save()d by this method.
+
+        :raise NodeAlreadySaved: when the passed ``instance`` already exists
+            in the database
         """
         raise NotImplementedError
 
     @classmethod
     def get_foreign_keys(cls):
-        """ Get foreign keys and models they refer to, so we can pre-process the
-        data for load_bulk """
+        """Get foreign keys and models they refer to, so we can pre-process
+        the data for load_bulk
+        """
         foreign_keys = {}
         for field in cls._meta.fields:
-            if field.get_internal_type() == 'ForeignKey' and \
-                            field.name != 'parent':
+            if (
+                field.get_internal_type() == 'ForeignKey' and
+                field.name != 'parent'
+            ):
                 foreign_keys[field.name] = field.rel.to
         return foreign_keys
 
     @classmethod
     def _process_foreign_keys(cls, foreign_keys, node_data):
-        """ For each foreign key try to load the actual object so load_bulk
-        doesn't fail trying to load an int where django expects a model instance
+        """For each foreign key try to load the actual object so load_bulk
+        doesn't fail trying to load an int where django expects a
+        model instance
         """
         for key in foreign_keys.keys():
             if key in node_data:
@@ -113,7 +123,6 @@ class Node(models.Model):
                     (node_obj, node)
                     for node in node_struct['children'][::-1]
                 ])
-        transaction.commit_unless_managed()
         return added
 
     @classmethod
@@ -359,8 +368,14 @@ class Node(models.Model):
 
             Object creation data that will be passed to the inherited Node
             model
+        :param instance: Instead of passing object creation data, you can
+            pass an already-constructed (but not yet saved) model instance to
+            be inserted into the tree.
 
         :returns: The created node object. It will be save()d by this method.
+
+        :raise NodeAlreadySaved: when the passed ``instance`` already exists
+            in the database
         """
         raise NotImplementedError
 
@@ -385,6 +400,9 @@ class Node(models.Model):
 
             Object creation data that will be passed to the inherited
             Node model
+        :param instance: Instead of passing object creation data, you can
+            pass an already-constructed (but not yet saved) model instance to
+            be inserted into the tree.
 
         :returns:
 
@@ -395,6 +413,8 @@ class Node(models.Model):
            ``pos`` parm wasn't ``sorted-sibling``
         :raise MissingNodeOrderBy: when passing ``sorted-sibling`` as ``pos``
            and the :attr:`node_order_by` attribute is missing
+        :raise NodeAlreadySaved: when the passed ``instance`` already exists
+            in the database
         """
         raise NotImplementedError
 
@@ -483,7 +503,7 @@ class Node(models.Model):
 
     def delete(self):
         """Removes a node and all it's descendants."""
-        self.__class__.objects.filter(id=self.pk).delete()
+        self.__class__.objects.filter(pk=self.pk).delete()
 
     def _prepare_pos_var(self, pos, method_name, valid_pos, valid_sorted_pos):
         if pos is None:
@@ -547,20 +567,13 @@ class Node(models.Model):
         return siblings.filter(reduce(operator.or_, filters))
 
     @classmethod
-    def get_annotated_list(cls, parent=None):
+    def get_annotated_list_qs(cls, qs):
         """
-        Gets an annotated list from a tree branch.
-
-        :param parent:
-
-            The node whose descendants will be annotated. The node itself
-            will be included in the list. If not given, the entire tree
-            will be annotated.
+        Gets an annotated list from a queryset.
         """
-
         result, info = [], {}
         start_depth, prev_depth = (None, None)
-        for node in cls.get_tree(parent):
+        for node in qs:
             depth = node.get_depth()
             if start_depth is None:
                 start_depth = depth
@@ -573,6 +586,29 @@ class Node(models.Model):
         if start_depth and start_depth > 0:
             info['close'] = list(range(0, prev_depth - start_depth + 1))
         return result
+
+    @classmethod
+    def get_annotated_list(cls, parent=None, max_depth=None):
+        """
+        Gets an annotated list from a tree branch.
+
+        :param parent:
+
+            The node whose descendants will be annotated. The node itself
+            will be included in the list. If not given, the entire tree
+            will be annotated.
+
+        :param max_depth:
+
+            Optionally limit to specified depth
+        """
+
+        result, info = [], {}
+        start_depth, prev_depth = (None, None)
+        qs = cls.get_tree(parent)
+        if max_depth:
+            qs = qs.filter(depth__lte=max_depth)
+        return cls.get_annotated_list_qs(qs)
 
     @classmethod
     def _get_serializable_model(cls):
@@ -593,7 +629,7 @@ class Node(models.Model):
         return {
             'read': connections[router.db_for_read(cls)],
             'write': connections[router.db_for_write(cls)]
-            }[action]
+        }[action]
 
     @classmethod
     def get_database_vendor(cls, action):

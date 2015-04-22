@@ -39,20 +39,28 @@ def pytest_report_header(config):
 
 
 def pytest_configure(config):
+    if django.VERSION >= (1, 7):
+        django.setup()
     setup_test_environment()
     connection.creation.create_test_db(verbosity=2, autoclobber=True)
 
 
 def pytest_unconfigure(config):
     dbsettings = settings.DATABASES['default']
-    dbtestname = dbsettings['TEST_NAME']
+    if django.VERSION >= (1, 7):
+        dbtestname = dbsettings['TEST']['NAME']
+    else:
+        dbtestname = dbsettings['TEST_NAME']
     connection.close()
     if dbsettings['ENGINE'].split('.')[-1] == 'postgresql_psycopg2':
         connection.connection = None
         connection.settings_dict['NAME'] = dbtestname.split('_')[1]
         cursor = connection.cursor()
         connection.autocommit = True
-        connection._set_isolation_level(0)
+        if django.VERSION < (1, 6):
+            connection._set_isolation_level(0)
+        else:
+            connection._set_autocommit(True)
         time.sleep(1)
         sys.stdout.write(
             "Destroying test database for alias '%s' (%s)...\n" % (

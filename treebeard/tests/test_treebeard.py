@@ -1,9 +1,9 @@
+# -*- coding: utf-8 -*-
 """Unit/Functional tests"""
 
-from __future__ import with_statement
+from __future__ import with_statement, unicode_literals
 import datetime
 import os
-import sys
 
 from django.contrib.admin.sites import AdminSite
 from django.contrib.admin.views.main import ChangeList
@@ -16,12 +16,16 @@ from django.test.client import RequestFactory
 import pytest
 
 from treebeard import numconv
-from treebeard.admin import admin_factory
+from treebeard.admin import admin_factory, TO_FIELD_VAR
 from treebeard.exceptions import InvalidPosition, InvalidMoveToDescendant,\
-    PathOverflow, MissingNodeOrderBy
+    PathOverflow, MissingNodeOrderBy, NodeAlreadySaved
 from treebeard.forms import movenodeform_factory
 from treebeard.templatetags.admin_tree import get_static_url
 from treebeard.tests import models
+from treebeard.tests.admin import register_all as admin_register_all
+
+
+admin_register_all()
 
 
 BASE_DATA = [
@@ -69,6 +73,11 @@ def model_without_proxy(request):
     return _prepare_db_test(request)
 
 
+@pytest.fixture(scope='function', params=models.UNICODE_MODELS)
+def model_with_unicode(request):
+    return _prepare_db_test(request)
+
+
 @pytest.fixture(scope='function', params=models.SORTED_MODELS)
 def sorted_model(request):
     return _prepare_db_test(request)
@@ -76,6 +85,11 @@ def sorted_model(request):
 
 @pytest.fixture(scope='function', params=models.RELATED_MODELS)
 def related_model(request):
+    return _prepare_db_test(request)
+
+
+@pytest.fixture(scope='function', params=models.INHERITED_MODELS)
+def inherited_model(request):
     return _prepare_db_test(request)
 
 
@@ -128,11 +142,13 @@ class TestTreeBase(object):
                 for o in model.get_tree()]
 
     def _assert_get_annotated_list(self, model, expected, parent=None):
+        results = model.get_annotated_list(parent)
         got = [
             (obj[0].desc, obj[1]['open'], obj[1]['close'], obj[1]['level'])
-            for obj in model.get_annotated_list(parent)
+            for obj in results
         ]
         assert expected == got
+        assert all([type(obj[0]) == model for obj in results])
 
 
 class TestEmptyTree(TestTreeBase):
@@ -220,9 +236,11 @@ class TestClassMethods(TestNonEmptyTree):
         assert self.got(model) == expected
 
     def test_get_tree_all(self, model):
+        nodes = model.get_tree()
         got = [(o.desc, o.get_depth(), o.get_children_count())
-               for o in model.get_tree()]
+               for o in nodes]
         assert got == UNCHANGED
+        assert all([type(o) == model for o in nodes])
 
     def test_dump_bulk_all(self, model):
         assert model.dump_bulk(keep_ids=False) == BASE_DATA
@@ -234,8 +252,9 @@ class TestClassMethods(TestNonEmptyTree):
         # the tree was modified by load_bulk, so we reload our node object
         node = model.objects.get(pk=node.pk)
 
+        nodes = model.get_tree(node)
         got = [(o.desc, o.get_depth(), o.get_children_count())
-               for o in model.get_tree(node)]
+               for o in nodes]
         expected = [('231', 3, 4),
                     ('1', 4, 0),
                     ('2', 4, 4),
@@ -248,15 +267,18 @@ class TestClassMethods(TestNonEmptyTree):
                     ('4', 4, 1),
                     ('41', 5, 0)]
         assert got == expected
+        assert all([type(o) == model for o in nodes])
 
     def test_get_tree_leaf(self, model):
         node = model.objects.get(desc='1')
 
         assert 0 == node.get_children_count()
+        nodes = model.get_tree(node)
         got = [(o.desc, o.get_depth(), o.get_children_count())
-               for o in model.get_tree(node)]
+               for o in nodes]
         expected = [('1', 1, 0)]
         assert got == expected
+        assert all([type(o) == model for o in nodes])
 
     def test_get_annotated_list_all(self, model):
         expected = [('1', True, [], 0), ('2', False, [], 0),
@@ -328,19 +350,37 @@ class TestClassMethods(TestNonEmptyTree):
         got = model.get_root_nodes()
         expected = ['1', '2', '3', '4']
         assert [node.desc for node in got] == expected
+        assert all([type(node) == model for node in got])
 
     def test_get_first_root_node(self, model):
         got = model.get_first_root_node()
         assert got.desc == '1'
+        assert type(got) == model
 
     def test_get_last_root_node(self, model):
         got = model.get_last_root_node()
         assert got.desc == '4'
+        assert type(got) == model
 
     def test_add_root(self, model):
         obj = model.add_root(desc='5')
         assert obj.get_depth() == 1
-        assert model.get_last_root_node().desc == '5'
+        got = model.get_last_root_node()
+        assert got.desc == '5'
+        assert type(got) == model
+
+    def test_add_root_with_passed_instance(self, model):
+        obj = model(desc='5')
+        result = model.add_root(instance=obj)
+        assert result == obj
+        got = model.get_last_root_node()
+        assert got.desc == '5'
+        assert type(got) == model
+
+    def test_add_root_with_already_saved_instance(self, model):
+        obj = model.objects.get(desc='4')
+        with pytest.raises(NodeAlreadySaved):
+            model.add_root(instance=obj)
 
 
 class TestSimpleNodeMethods(TestNonEmptyTree):
@@ -381,6 +421,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
         for desc, expected in data:
             node = model.objects.get(desc=desc).get_root()
             assert node.desc == expected
+            assert type(node) == model
 
     def test_get_parent(self, model):
         data = [
@@ -399,6 +440,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
             parent = node.get_parent()
             if expected:
                 assert parent.desc == expected
+                assert type(parent) == model
             else:
                 assert parent is None
             objs[desc] = node
@@ -412,6 +454,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
             parent = node.get_parent(True)
             if expected:
                 assert parent.desc == expected
+                assert type(parent) == model
             else:
                 assert parent is None
 
@@ -424,6 +467,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
         for desc, expected in data:
             children = model.objects.get(desc=desc).get_children()
             assert [node.desc for node in children] == expected
+            assert all([type(node) == model for node in children])
 
     def test_get_children_count(self, model):
         data = [
@@ -444,6 +488,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
         for desc, expected in data:
             siblings = model.objects.get(desc=desc).get_siblings()
             assert [node.desc for node in siblings] == expected
+            assert all([type(node) == model for node in siblings])
 
     def test_get_first_sibling(self, model):
         data = [
@@ -458,6 +503,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
         for desc, expected in data:
             node = model.objects.get(desc=desc).get_first_sibling()
             assert node.desc == expected
+            assert type(node) == model
 
     def test_get_prev_sibling(self, model):
         data = [
@@ -475,6 +521,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
                 assert node is None
             else:
                 assert node.desc == expected
+                assert type(node) == model
 
     def test_get_next_sibling(self, model):
         data = [
@@ -492,6 +539,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
                 assert node is None
             else:
                 assert node.desc == expected
+                assert type(node) == model
 
     def test_get_last_sibling(self, model):
         data = [
@@ -506,6 +554,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
         for desc, expected in data:
             node = model.objects.get(desc=desc).get_last_sibling()
             assert node.desc == expected
+            assert type(node) == model
 
     def test_get_first_child(self, model):
         data = [
@@ -520,6 +569,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
                 assert node is None
             else:
                 assert node.desc == expected
+                assert type(node) == model
 
     def test_get_last_child(self, model):
         data = [
@@ -534,6 +584,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
                 assert node is None
             else:
                 assert node.desc == expected
+                assert type(node) == model
 
     def test_get_ancestors(self, model):
         data = [
@@ -544,6 +595,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
         for desc, expected in data:
             nodes = model.objects.get(desc=desc).get_ancestors()
             assert [node.desc for node in nodes] == expected
+            assert all([type(node) == model for node in nodes])
 
     def test_get_descendants(self, model):
         data = [
@@ -556,6 +608,7 @@ class TestSimpleNodeMethods(TestNonEmptyTree):
         for desc, expected in data:
             nodes = model.objects.get(desc=desc).get_descendants()
             assert [node.desc for node in nodes] == expected
+            assert all([type(node) == model for node in nodes])
 
     def test_get_descendant_count(self, model):
         data = [
@@ -643,6 +696,28 @@ class TestAddChild(TestNonEmptyTree):
                     ('4', 1, 1),
                     ('41', 2, 0)]
         assert self.got(model) == expected
+
+    def test_add_child_with_passed_instance(self, model):
+        child = model(desc='2311')
+        result = model.objects.get(desc='231').add_child(instance=child)
+        assert result == child
+        expected = [('1', 1, 0),
+                    ('2', 1, 4),
+                    ('21', 2, 0),
+                    ('22', 2, 0),
+                    ('23', 2, 1),
+                    ('231', 3, 1),
+                    ('2311', 4, 0),
+                    ('24', 2, 0),
+                    ('3', 1, 0),
+                    ('4', 1, 1),
+                    ('41', 2, 0)]
+        assert self.got(model) == expected
+
+    def test_add_child_with_already_saved_instance(self, model):
+        child = model.objects.get(desc='21')
+        with pytest.raises(NodeAlreadySaved):
+            model.objects.get(desc='2').add_child(instance=child)
 
 
 class TestAddSibling(TestNonEmptyTree):
@@ -836,6 +911,20 @@ class TestAddSibling(TestNonEmptyTree):
                     ('4', 1, 1),
                     ('41', 2, 0)]
         assert self.got(model) == expected
+
+    def test_add_sibling_with_passed_instance(self, model):
+        node_wchildren = model.objects.get(desc='2')
+        obj = model(desc='5')
+        result = node_wchildren.add_sibling('last-sibling', instance=obj)
+        assert result == obj
+        assert obj.get_depth() == 1
+        assert node_wchildren.get_last_sibling().desc == '5'
+
+    def test_add_sibling_already_saved_instance(self, model):
+        node_wchildren = model.objects.get(desc='2')
+        existing_node = model.objects.get(desc='4')
+        with pytest.raises(NodeAlreadySaved):
+            node_wchildren.add_sibling('last-sibling', instance=existing_node)
 
 
 class TestDelete(TestNonEmptyTree):
@@ -1510,16 +1599,180 @@ class TestTreeSorted(TestTreeBase):
         assert self.got(sorted_model) == expected
 
 
+class TestInheritedModels(TestTreeBase):
+
+    @classmethod
+    def setup_class(cls):
+        themodels = zip(models.BASE_MODELS, models.INHERITED_MODELS)
+        for model, inherited_model in themodels:
+            model.add_root(desc='1')
+            model.add_root(desc='2')
+
+            node21 = inherited_model(desc='21')
+            model.objects.get(desc='2').add_child(instance=node21)
+
+            model.objects.get(desc='21').add_child(desc='211')
+            model.objects.get(desc='21').add_child(desc='212')
+            model.objects.get(desc='2').add_child(desc='22')
+
+            node3 = inherited_model(desc='3')
+            model.add_root(instance=node3)
+
+    @classmethod
+    def teardown_class(cls):
+        # Will also empty INHERITED_MODELS by cascade
+        models.empty_models_tables(models.BASE_MODELS)
+
+    def test_get_tree_all(self, inherited_model):
+        got = [(o.desc, o.get_depth(), o.get_children_count())
+               for o in inherited_model.get_tree()]
+        expected = [
+            ('1', 1, 0),
+            ('2', 1, 2),
+            ('21', 2, 2),
+            ('211', 3, 0),
+            ('212', 3, 0),
+            ('22', 2, 0),
+            ('3', 1, 0),
+        ]
+        assert got == expected
+
+    def test_get_tree_node(self, inherited_model):
+        node = inherited_model.objects.get(desc='21')
+
+        got = [(o.desc, o.get_depth(), o.get_children_count())
+               for o in inherited_model.get_tree(node)]
+        expected = [
+            ('21', 2, 2),
+            ('211', 3, 0),
+            ('212', 3, 0),
+        ]
+        assert got == expected
+
+    def test_get_root_nodes(self, inherited_model):
+        got = inherited_model.get_root_nodes()
+        expected = ['1', '2', '3']
+        assert [node.desc for node in got] == expected
+
+    def test_get_first_root_node(self, inherited_model):
+        got = inherited_model.get_first_root_node()
+        assert got.desc == '1'
+
+    def test_get_last_root_node(self, inherited_model):
+        got = inherited_model.get_last_root_node()
+        assert got.desc == '3'
+
+    def test_is_root(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.is_root() is False
+        assert node3.is_root() is True
+
+    def test_is_leaf(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.is_leaf() is False
+        assert node3.is_leaf() is True
+
+    def test_get_root(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_root().desc == '2'
+        assert node3.get_root().desc == '3'
+
+    def test_get_parent(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_parent().desc == '2'
+        assert node3.get_parent() is None
+
+    def test_get_children(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert [node.desc for node in node21.get_children()] == ['211', '212']
+        assert [node.desc for node in node3.get_children()] == []
+
+    def test_get_children_count(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_children_count() == 2
+        assert node3.get_children_count() == 0
+
+    def test_get_siblings(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert [node.desc for node in node21.get_siblings()] == ['21', '22']
+        assert [node.desc for node in node3.get_siblings()] == ['1', '2', '3']
+
+    def test_get_first_sibling(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_first_sibling().desc == '21'
+        assert node3.get_first_sibling().desc == '1'
+
+    def test_get_prev_sibling(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_prev_sibling() is None
+        assert node3.get_prev_sibling().desc == '2'
+
+    def test_get_next_sibling(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_next_sibling().desc == '22'
+        assert node3.get_next_sibling() is None
+
+    def test_get_last_sibling(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_last_sibling().desc == '22'
+        assert node3.get_last_sibling().desc == '3'
+
+    def test_get_first_child(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_first_child().desc == '211'
+        assert node3.get_first_child() is None
+
+    def test_get_last_child(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_last_child().desc == '212'
+        assert node3.get_last_child() is None
+
+    def test_get_ancestors(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert [node.desc for node in node21.get_ancestors()] == ['2']
+        assert [node.desc for node in node3.get_ancestors()] == []
+
+    def test_get_descendants(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert [node.desc for node in node21.get_descendants()] == [
+            '211', '212']
+        assert [node.desc for node in node3.get_descendants()] == []
+
+    def test_get_descendant_count(self, inherited_model):
+        node21 = inherited_model.objects.get(desc='21')
+        node3 = inherited_model.objects.get(desc='3')
+        assert node21.get_descendant_count() == 2
+        assert node3.get_descendant_count() == 0
+
+
 class TestMP_TreeAlphabet(TestTreeBase):
+    @pytest.mark.skipif(
+        not os.getenv('TREEBEARD_TEST_ALPHABET', False),
+        reason='TREEBEARD_TEST_ALPHABET env variable not set.'
+    )
     def test_alphabet(self, mpalphabet_model):
-        if not os.getenv('TREEBEARD_TEST_ALPHABET', False):
-            # run this test only if the enviroment variable is set
-            return
+        """This isn't actually a test, it's an informational routine."""
         basealpha = numconv.BASE85
         got_err = False
         last_good = None
-        for alphabetlen in range(35, len(basealpha) + 1):
+        for alphabetlen in range(3, len(basealpha) + 1):
             alphabet = basealpha[0:alphabetlen]
+            assert len(alphabet) >= 3
             expected = [alphabet[0] + char for char in alphabet[1:]]
             expected.extend([alphabet[1] + char for char in alphabet])
             expected.append(alphabet[2] + alphabet[0])
@@ -1529,6 +1782,7 @@ class TestMP_TreeAlphabet(TestTreeBase):
 
             # change the model's alphabet
             mpalphabet_model.alphabet = alphabet
+            mpalphabet_model.numconv_obj_ = None
 
             # insert root nodes
             for pos in range(len(alphabet) * 2):
@@ -1542,13 +1796,12 @@ class TestMP_TreeAlphabet(TestTreeBase):
             got = [obj.path
                    for obj in mpalphabet_model.objects.all()]
             if got != expected:
-                got_err = True
+                break
             last_good = alphabet
-        sys.stdout.write(
-            '\nThe best BASE85 based alphabet for your setup is: %s\n' % (
-                last_good, )
+        assert False, (
+            'Best BASE85 based alphabet for your setup: {} (base {})'.format(
+                last_good, len(last_good))
         )
-        sys.stdout.flush()
 
 
 class TestHelpers(TestTreeBase):
@@ -1859,7 +2112,7 @@ class TestMoveNodeForm(TestNonEmptyTree):
         self._assert_nodes_in_choices(form, nodes)
 
     def _get_node_ids_and_depths(self, nodes):
-        return [(node.id, node.get_depth()) for node in nodes]
+        return [(node.pk, node.get_depth()) for node in nodes]
 
     def test_form_root_node(self, model):
         nodes = list(model.get_tree())
@@ -2109,6 +2362,41 @@ class TestAdminTree(TestNonEmptyTree):
         assert '<input type="hidden" id="has-filters" value="0"/>' in \
                table_output
 
+    def test_unicode_result_tree(self, model_with_unicode):
+        """
+        Verifies that inclusion tag result_list generates a table when with
+        default ModelAdmin settings.
+        """
+        model = model_with_unicode
+        # Add a unicode description
+        model.add_root(desc='áéîøü')
+        request = RequestFactory().get('/admin/tree/')
+        site = AdminSite()
+        form_class = movenodeform_factory(model)
+        admin_class = admin_factory(form_class)
+        m = admin_class(model, site)
+        list_display = m.get_list_display(request)
+        list_display_links = m.get_list_display_links(request, list_display)
+        cl = ChangeList(request, model, list_display, list_display_links,
+                        m.list_filter, m.date_hierarchy, m.search_fields,
+                        m.list_select_related, m.list_per_page,
+                        m.list_max_show_all, m.list_editable, m)
+        cl.formset = None
+        context = Context({'cl': cl,
+                           'request': request})
+        table_output = self.template.render(context)
+        # We have the same amount of drag handlers as objects
+        drag_handler = '<td class="drag-handler"><span>&nbsp;</span></td>'
+        assert table_output.count(drag_handler) == model.objects.count()
+        # All nodes are in the result tree
+        for object in model.objects.all():
+            url = cl.url_for_result(object)
+            node = '<a href="%s">%s</a>' % (url, object.desc)
+            assert node in table_output
+        # Unfiltered
+        assert '<input type="hidden" id="has-filters" value="0"/>' in \
+               table_output
+
     def test_result_filtered(self, model_without_proxy):
         """ Test template changes with filters or pagination.
         """
@@ -2218,7 +2506,7 @@ class TestAdminTreeList(TestNonEmptyTree):
         output_template = ('<input type="checkbox" class="action-select" '
                            'value="%i" name="_selected_action" />'
                            '<a href="%i/" >Node %i</a>')
-        print(table_output)
+
         for object in model.objects.all():
             expected_output = output_template % (object.pk, object.pk,
                                                  object.pk)
@@ -2227,8 +2515,10 @@ class TestAdminTreeList(TestNonEmptyTree):
     def test_result_tree_list_with_get(self, model_without_proxy):
         model = model_without_proxy
         # Test t GET parameter with value id
-        request = RequestFactory().get('/admin/tree/?t=id')
+        request = RequestFactory().get(
+            '/admin/tree/?{0}=id'.format(TO_FIELD_VAR))
         site = AdminSite()
+        admin_register_all(site)
         form_class = movenodeform_factory(model)
         admin_class = admin_factory(form_class)
         m = admin_class(model, site)
@@ -2378,4 +2668,3 @@ class TestTreeAdmin(TestNonEmptyTree):
                     ('4', 1, 1),
                     ('41', 2, 0)]
         assert self.got(model) == expected
-

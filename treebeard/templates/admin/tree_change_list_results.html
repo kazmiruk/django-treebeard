@@ -17,7 +17,7 @@
         </thead>
         <tbody>
         {% for node_id, parent_id, node_level, has_children, result in results %}
-            <tr id="node-{{ node_id }}-id" class="{% cycle 'row1' 'row2' %}"
+            <tr id="node-{{ node_id }}-id" class="{{ loop.cycle('row1', 'row2') }}"
                 level="{{ node_level }}" children-num="{{ children_num }}"
                 parent="{{ parent_id }}" node="{{ node_id }}">
                 {% for item in result %}

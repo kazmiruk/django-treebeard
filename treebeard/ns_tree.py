@@ -11,8 +11,32 @@ from django.db import connection, models, transaction
 from django.db.models import Q
 from django.utils.translation import ugettext_noop as _
 
-from treebeard.exceptions import InvalidMoveToDescendant
+from treebeard.exceptions import InvalidMoveToDescendant, NodeAlreadySaved
 from treebeard.models import Node
+
+
+def get_result_class(cls):
+    """
+    For the given model class, determine what class we should use for the
+    nodes returned by its tree methods (such as get_children).
+
+    Usually this will be trivially the same as the initial model class,
+    but there are special cases when model inheritance is in use:
+
+    * If the model extends another via multi-table inheritance, we need to
+      use whichever ancestor originally implemented the tree behaviour (i.e.
+      the one which defines the 'lft'/'rgt' fields). We can't use the
+      subclass, because it's not guaranteed that the other nodes reachable
+      from the current one will be instances of the same subclass.
+
+    * If the model is a proxy model, the returned nodes should also use
+      the proxy class.
+    """
+    base_class = cls._meta.get_field('lft').model
+    if cls._meta.proxy_for_model == base_class:
+        return cls
+    else:
+        return base_class
 
 
 class NS_NodeQuerySet(models.query.QuerySet):
@@ -74,12 +98,10 @@ class NS_NodeQuerySet(models.query.QuerySet):
                     reduce(operator.or_,
                            toremove)
                 ).delete(removed_ranges=ranges)
-        transaction.commit_unless_managed()
 
 
 class NS_NodeManager(models.Manager):
-    """ Custom manager for nodes.
-    """
+    """Custom manager for nodes in a Nested Sets tree."""
 
     def get_queryset(self):
         """Sets the custom queryset as the default."""
@@ -116,15 +138,22 @@ class NS_Node(Node):
             # adding the first root node
             newtree_id = 1
 
-        # creating the new object
-        newobj = cls(**kwargs)
+        if len(kwargs) == 1 and 'instance' in kwargs:
+            # adding the passed (unsaved) instance to the tree
+            newobj = kwargs['instance']
+            if newobj.pk:
+                raise NodeAlreadySaved("Attempted to add a tree node that is "\
+                    "already in the database")
+        else:
+            # creating the new object
+            newobj = get_result_class(cls)(**kwargs)
+
         newobj.depth = 1
         newobj.tree_id = newtree_id
         newobj.lft = 1
         newobj.rgt = 2
         # saving the instance before returning it
         newobj.save()
-        transaction.commit_unless_managed()
         return newobj
 
     @classmethod
@@ -142,7 +171,8 @@ class NS_Node(Node):
               '                ELSE rgt END '\
               ' WHERE rgt >= %(parent_rgt)d AND '\
               '       tree_id = %(tree_id)s' % {
-                  'table': connection.ops.quote_name(cls._meta.db_table),
+                  'table': connection.ops.quote_name(
+                      get_result_class(cls)._meta.db_table),
                   'parent_rgt': rgt,
                   'tree_id': tree_id,
                   'lftop': lftop,
@@ -154,7 +184,8 @@ class NS_Node(Node):
         sql = 'UPDATE %(table)s '\
               ' SET tree_id = tree_id+1 '\
               ' WHERE tree_id >= %(tree_id)d' % {
-                  'table': connection.ops.quote_name(cls._meta.db_table),
+                  'table': connection.ops.quote_name(
+                      get_result_class(cls)._meta.db_table),
                   'tree_id': tree_id}
         return sql, []
 
@@ -174,8 +205,16 @@ class NS_Node(Node):
         sql, params = self.__class__._move_right(self.tree_id,
                                                  self.rgt, False, 2)
 
-        # creating a new object
-        newobj = self.__class__(**kwargs)
+        if len(kwargs) == 1 and 'instance' in kwargs:
+            # adding the passed (unsaved) instance to the tree
+            newobj = kwargs['instance']
+            if newobj.pk:
+                raise NodeAlreadySaved("Attempted to add a tree node that is "\
+                    "already in the database")
+        else:
+            # creating a new object
+            newobj = get_result_class(self.__class__)(**kwargs)
+
         newobj.tree_id = self.tree_id
         newobj.depth = self.depth + 1
         newobj.lft = self.lft + 1
@@ -191,7 +230,6 @@ class NS_Node(Node):
 
         # saving the instance before returning it
         newobj.save()
-        transaction.commit_unless_managed()
 
         return newobj
 
@@ -200,8 +238,16 @@ class NS_Node(Node):
 
         pos = self._prepare_pos_var_for_add_sibling(pos)
 
-        # creating a new object
-        newobj = self.__class__(**kwargs)
+        if len(kwargs) == 1 and 'instance' in kwargs:
+            # adding the passed (unsaved) instance to the tree
+            newobj = kwargs['instance']
+            if newobj.pk:
+                raise NodeAlreadySaved("Attempted to add a tree node that is "\
+                    "already in the database")
+        else:
+            # creating a new object
+            newobj = get_result_class(self.__class__)(**kwargs)
+
         newobj.depth = self.depth
 
         sql = None
@@ -286,7 +332,6 @@ class NS_Node(Node):
             cursor.execute(sql, params)
         newobj.save()
 
-        transaction.commit_unless_managed()
 
         return newobj
 
@@ -297,7 +342,7 @@ class NS_Node(Node):
         """
 
         pos = self._prepare_pos_var_for_move(pos)
-        cls = self.__class__
+        cls = get_result_class(self.__class__)
 
         parent = None
 
@@ -419,7 +464,6 @@ class NS_Node(Node):
                                              fromobj.rgt, fromobj.tree_id)
         cursor.execute(sql, params)
 
-        transaction.commit_unless_managed()
 
     @classmethod
     def _get_close_gap_sql(cls, drop_lft, drop_rgt, tree_id):
@@ -435,7 +479,8 @@ class NS_Node(Node):
               ' WHERE (lft > %(drop_lft)d '\
               '     OR rgt > %(drop_lft)d) AND '\
               '     tree_id=%(tree_id)d' % {
-                  'table': connection.ops.quote_name(cls._meta.db_table),
+                  'table': connection.ops.quote_name(
+                      get_result_class(cls)._meta.db_table),
                   'gapsize': drop_rgt - drop_lft + 1,
                   'drop_lft': drop_lft,
                   'tree_id': tree_id}
@@ -444,6 +489,8 @@ class NS_Node(Node):
     @classmethod
     def load_bulk(cls, bulk_data, parent=None, keep_ids=False):
         """Loads a list/dictionary structure to the tree."""
+
+        cls = get_result_class(cls)
 
         # tree, iterative preorder
         added = []
@@ -474,7 +521,6 @@ class NS_Node(Node):
                     (node_obj.pk, node)
                     for node in node_struct['children'][::-1]
                 ])
-        transaction.commit_unless_managed()
         return added
 
     def get_children(self):
@@ -493,7 +539,8 @@ class NS_Node(Node):
         """:returns: the root node for the current node object."""
         if self.lft == 1:
             return self
-        return self.__class__.objects.get(tree_id=self.tree_id, lft=1)
+        return get_result_class(self.__class__).objects.get(
+            tree_id=self.tree_id, lft=1)
 
     def is_root(self):
         """:returns: True if the node is a root node (else, returns False)"""
@@ -551,6 +598,8 @@ class NS_Node(Node):
             A *queryset* of nodes ordered as DFS, including the parent.
             If no parent is given, all trees are returned.
         """
+        cls = get_result_class(cls)
+
         if parent is None:
             # return the entire tree
             return cls.objects.all()
@@ -566,7 +615,7 @@ class NS_Node(Node):
             include the node itself
         """
         if self.is_leaf():
-            return self.__class__.objects.none()
+            return get_result_class(self.__class__).objects.none()
         return self.__class__.get_tree(self).exclude(pk=self.pk)
 
     def get_descendant_count(self):
@@ -579,8 +628,8 @@ class NS_Node(Node):
             starting by the root node and descending to the parent.
         """
         if self.is_root():
-            return self.__class__.objects.none()
-        return self.__class__.objects.filter(
+            return get_result_class(self.__class__).objects.none()
+        return get_result_class(self.__class__).objects.filter(
             tree_id=self.tree_id,
             lft__lt=self.lft,
             rgt__gt=self.rgt)
@@ -617,7 +666,7 @@ class NS_Node(Node):
     @classmethod
     def get_root_nodes(cls):
         """:returns: A queryset containing the root nodes in the tree."""
-        return cls.objects.filter(lft=1)
+        return get_result_class(cls).objects.filter(lft=1)
 
     class Meta:
         """Abstract model."""

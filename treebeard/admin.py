@@ -2,6 +2,7 @@
 
 import sys
 
+from django.conf import settings
 from django.conf.urls import patterns, url
 
 from django.contrib import admin, messages
@@ -17,16 +18,23 @@ from treebeard.exceptions import (InvalidPosition, MissingNodeOrderBy,
 from treebeard.al_tree import AL_Node
 
 
+try:
+    from django.contrib.admin.options import TO_FIELD_VAR
+except ImportError:
+    from django.contrib.admin.views.main import TO_FIELD_VAR
+
+
 class TreeAdmin(admin.ModelAdmin):
-    """Django Admin class for treebeard"""
+    """Django Admin class for treebeard."""
+
     change_list_template = 'admin/tree_change_list.html'
 
-    def queryset(self, request):
+    def get_queryset(self, request):
         if issubclass(self.model, AL_Node):
             # AL Trees return a list instead of a QuerySet for .get_tree()
-            # So we're returning the regular .queryset cause we will use
+            # So we're returning the regular .get_queryset cause we will use
             # the old admin
-            return super(TreeAdmin, self).queryset(request)
+            return super(TreeAdmin, self).get_queryset(request)
         else:
             return self.model.get_tree()
 
@@ -34,6 +42,12 @@ class TreeAdmin(admin.ModelAdmin):
         if issubclass(self.model, AL_Node):
             # For AL trees, use the old admin display
             self.change_list_template = 'admin/tree_list.html'
+        if extra_context is None:
+            extra_context = {}
+        lacks_request = ('request' not in extra_context and
+            'django.core.context_processors.request' not in settings.TEMPLATE_CONTEXT_PROCESSORS)
+        if lacks_request:
+            extra_context['request'] = request
         return super(TreeAdmin, self).changelist_view(request, extra_context)
 
     def get_urls(self):

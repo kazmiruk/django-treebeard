@@ -1,4 +1,4 @@
-from django.db import models, connection
+from django.db import models
 from django.contrib.auth.models import User
 
 from treebeard.mp_tree import MP_Node
@@ -22,6 +22,15 @@ class MP_TestNode(MP_Node):
         return 'Node %d' % self.pk
 
 
+class MP_UnicodeNode(MP_Node):
+    steplen = 3
+
+    desc = models.CharField(max_length=255)
+
+    def __str__(self):  # pragma: no cover
+        return self.desc
+
+
 class MP_TestNodeSomeDep(models.Model):
     node = models.ForeignKey(MP_TestNode)
 
@@ -39,11 +48,22 @@ class MP_TestNodeRelated(MP_Node):
         return 'Node %d' % self.pk
 
 
+class MP_TestNodeInherited(MP_TestNode):
+    extra_desc = models.CharField(max_length=255)
+
+
 class NS_TestNode(NS_Node):
     desc = models.CharField(max_length=255)
 
     def __str__(self):  # pragma: no cover
         return 'Node %d' % self.pk
+
+
+class NS_UnicodetNode(NS_Node):
+    desc = models.CharField(max_length=255)
+
+    def __str__(self):  # pragma: no cover
+        return self.desc
 
 
 class NS_TestNodeSomeDep(models.Model):
@@ -61,6 +81,10 @@ class NS_TestNodeRelated(NS_Node):
         return 'Node %d' % self.pk
 
 
+class NS_TestNodeInherited(NS_TestNode):
+    extra_desc = models.CharField(max_length=255)
+
+
 class AL_TestNode(AL_Node):
     parent = models.ForeignKey('self',
                                related_name='children_set',
@@ -71,6 +95,18 @@ class AL_TestNode(AL_Node):
 
     def __str__(self):  # pragma: no cover
         return 'Node %d' % self.pk
+
+
+class AL_UnicodeNode(AL_Node):
+    parent = models.ForeignKey('self',
+                               related_name='children_set',
+                               null=True,
+                               db_index=True)
+    sib_order = models.PositiveIntegerField()
+    desc = models.CharField(max_length=255)
+
+    def __str__(self):  # pragma: no cover
+        return self.desc
 
 
 class AL_TestNodeSomeDep(models.Model):
@@ -91,6 +127,10 @@ class AL_TestNodeRelated(AL_Node):
 
     def __str__(self):  # pragma: no cover
         return 'Node %d' % self.pk
+
+
+class AL_TestNodeInherited(AL_TestNode):
+    extra_desc = models.CharField(max_length=255)
 
 
 class MP_TestNodeSorted(MP_Node):
@@ -210,6 +250,10 @@ SORTED_MODELS = AL_TestNodeSorted, MP_TestNodeSorted, NS_TestNodeSorted
 DEP_MODELS = AL_TestNodeSomeDep, MP_TestNodeSomeDep, NS_TestNodeSomeDep
 MP_SHORTPATH_MODELS = MP_TestNodeShortPath, MP_TestSortedNodeShortPath
 RELATED_MODELS = AL_TestNodeRelated, MP_TestNodeRelated, NS_TestNodeRelated
+UNICODE_MODELS = AL_UnicodeNode, MP_UnicodeNode, NS_UnicodetNode
+INHERITED_MODELS = (
+    AL_TestNodeInherited, MP_TestNodeInherited, NS_TestNodeInherited
+)
 
 
 def empty_models_tables(models):

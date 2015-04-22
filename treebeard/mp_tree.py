@@ -7,20 +7,45 @@ if sys.version_info >= (3, 0):
     from functools import reduce
 
 from django.core import serializers
-from django.db import models, transaction, connection, IntegrityError
+from django.db import models, connection, IntegrityError
 from django.db.models import F, Q
 from django.utils.translation import ugettext_noop as _
 
 from treebeard.numconv import NumConv
 from treebeard.models import Node
-from treebeard.exceptions import InvalidMoveToDescendant, PathOverflow
+from treebeard.exceptions import InvalidMoveToDescendant, PathOverflow,\
+    NodeAlreadySaved
+
+
+def get_result_class(cls):
+    """
+    For the given model class, determine what class we should use for the
+    nodes returned by its tree methods (such as get_children).
+
+    Usually this will be trivially the same as the initial model class,
+    but there are special cases when model inheritance is in use:
+
+    * If the model extends another via multi-table inheritance, we need to
+      use whichever ancestor originally implemented the tree behaviour (i.e.
+      the one which defines the 'path' field). We can't use the
+      subclass, because it's not guaranteed that the other nodes reachable
+      from the current one will be instances of the same subclass.
+
+    * If the model is a proxy model, the returned nodes should also use
+      the proxy class.
+    """
+    base_class = cls._meta.get_field('path').model
+    if cls._meta.proxy_for_model == base_class:
+        return cls
+    else:
+        return base_class
 
 
 class MP_NodeQuerySet(models.query.QuerySet):
     """
     Custom queryset for the tree node manager.
 
-    Needed only for the customized delete method.
+    Needed only for the custom delete method.
     """
 
     def delete(self):
@@ -71,11 +96,10 @@ class MP_NodeQuerySet(models.query.QuerySet):
         if toremove:
             qset = self.model.objects.filter(reduce(operator.or_, toremove))
             super(MP_NodeQuerySet, qset).delete()
-        transaction.commit_unless_managed()
 
 
 class MP_NodeManager(models.Manager):
-    """Custom manager for nodes."""
+    """Custom manager for nodes in a Materialized Path tree."""
 
     def get_queryset(self):
         """Sets the custom queryset as the default."""
@@ -98,7 +122,8 @@ class MP_ComplexAddMoveHandler(MP_AddHandler):
         """:returns: The sql needed the numchild value of a node"""
         sql = "UPDATE %s SET numchild=numchild%s1"\
               " WHERE path=%%s" % (
-                  connection.ops.quote_name(self.node_cls._meta.db_table),
+                  connection.ops.quote_name(
+                      get_result_class(self.node_cls)._meta.db_table),
                   {'inc': '+', 'dec': '-'}[incdec])
         vals = [path]
         return sql, vals
@@ -208,7 +233,7 @@ class MP_ComplexAddMoveHandler(MP_AddHandler):
 
     def get_sql_newpath_in_branches(self, oldpath, newpath):
         """
-        :returns" The sql needed to move a branch to another position.
+        :returns: The sql needed to move a branch to another position.
 
         .. note::
 
@@ -218,7 +243,8 @@ class MP_ComplexAddMoveHandler(MP_AddHandler):
 
         vendor = self.node_cls.get_database_vendor('write')
         sql1 = "UPDATE %s SET" % (
-            connection.ops.quote_name(self.node_cls._meta.db_table), )
+            connection.ops.quote_name(
+                get_result_class(self.node_cls)._meta.db_table), )
 
         # <3 "standard" sql
         if vendor == 'sqlite':
@@ -277,13 +303,21 @@ class MP_AddRootHandler(MP_AddHandler):
         else:
             # adding the first root node
             newpath = self.cls._get_path(None, 1, 1)
+
+        if len(self.kwargs) == 1 and 'instance' in self.kwargs:
+            # adding the passed (unsaved) instance to the tree
+            newobj = self.kwargs['instance']
+            if newobj.pk:
+                raise NodeAlreadySaved("Attempted to add a tree node that is "\
+                    "already in the database")
+        else:
             # creating the new object
-        newobj = self.cls(**self.kwargs)
+            newobj = self.cls(**self.kwargs)
+
         newobj.depth = 1
         newobj.path = newpath
         # saving the instance before returning it
         newobj.save()
-        transaction.commit_unless_managed()
         return newobj
 
 
@@ -305,8 +339,16 @@ class MP_AddChildHandler(MP_AddHandler):
             return self.node.get_last_child().add_sibling(
                 'sorted-sibling', **self.kwargs)
 
-        # creating a new object
-        newobj = self.node_cls(**self.kwargs)
+        if len(self.kwargs) == 1 and 'instance' in self.kwargs:
+            # adding the passed (unsaved) instance to the tree
+            newobj = self.kwargs['instance']
+            if newobj.pk:
+                raise NodeAlreadySaved("Attempted to add a tree node that is "\
+                    "already in the database")
+        else:
+            # creating a new object
+            newobj = self.node_cls(**self.kwargs)
+
         newobj.depth = self.node.depth + 1
         if self.node.is_leaf():
             # the node had no children, adding the first child
@@ -325,12 +367,11 @@ class MP_AddChildHandler(MP_AddHandler):
         newobj.save()
         newobj._cached_parent_obj = self.node
 
-        self.node_cls.objects.filter(
+        get_result_class(self.node_cls).objects.filter(
             path=self.node.path, object_id=self.node.object_id).update(numchild=F('numchild')+1)
 
         # we increase the numchild value of the object in memory
         self.node.numchild += 1
-        transaction.commit_unless_managed()
         return newobj
 
 
@@ -345,8 +386,16 @@ class MP_AddSiblingHandler(MP_ComplexAddMoveHandler):
     def process(self):
         self.pos = self.node._prepare_pos_var_for_add_sibling(self.pos)
 
-        # creating a new object
-        newobj = self.node_cls(**self.kwargs)
+        if len(self.kwargs) == 1 and 'instance' in self.kwargs:
+            # adding the passed (unsaved) instance to the tree
+            newobj = self.kwargs['instance']
+            if newobj.pk:
+                raise NodeAlreadySaved("Attempted to add a tree node that is "\
+                    "already in the database")
+        else:
+            # creating a new object
+            newobj = self.node_cls(**self.kwargs)
+
         newobj.depth = self.node.depth
 
         if self.pos == 'sorted-sibling':
@@ -376,7 +425,6 @@ class MP_AddSiblingHandler(MP_ComplexAddMoveHandler):
         newobj.path = newpath
         newobj.save()
 
-        transaction.commit_unless_managed()
         return newobj
 
 
@@ -437,7 +485,6 @@ class MP_MoveHandler(MP_ComplexAddMoveHandler):
         self.sanity_updates_after_move(oldpath, newpath)
 
         self.run_sql_stmts()
-        transaction.commit_unless_managed()
 
     def sanity_updates_after_move(self, oldpath, newpath):
         """
@@ -483,7 +530,7 @@ class MP_MoveHandler(MP_ComplexAddMoveHandler):
                 # moving as a target's first child
                 newpos = 1
                 self.pos = 'first-sibling'
-                siblings = self.node_cls.objects.none()
+                siblings = get_result_class(self.node_cls).objects.none()
             else:
                 self.target = self.target.get_last_child()
                 self.pos = {
@@ -504,7 +551,8 @@ class MP_MoveHandler(MP_ComplexAddMoveHandler):
                   branch.
         """
         sql = "UPDATE %s SET depth=LENGTH(path)/%%s WHERE path LIKE %%s" % (
-            connection.ops.quote_name(self.node_cls._meta.db_table), )
+            connection.ops.quote_name(
+                get_result_class(self.node_cls)._meta.db_table), )
         vals = [self.node_cls.steplen, path + '%']
         return sql, vals
 
@@ -512,7 +560,6 @@ class MP_MoveHandler(MP_ComplexAddMoveHandler):
 class MP_Node(Node):
     """Abstract model to create your own Materialized Path Trees."""
 
-    # TODO: Get object field by this name?
     OBJECT_NAME = 'object_id'
 
     steplen = 4
@@ -554,6 +601,9 @@ class MP_Node(Node):
         Adds a root node to the tree. If there is no sharded id,
         it will be generated with 'generate_id' class method
 
+        This method saves the node in database. The object is populated as if via:
+            obj = cls(**kwargs)
+
         :raise PathOverflow: when no more root objects can be added
         :raise KeyError: when kwargs doesn't contain object_id
         """
@@ -562,6 +612,8 @@ class MP_Node(Node):
     @classmethod
     def dump_bulk(cls, parent=None, keep_ids=True):
         """Dumps a tree branch to a python data structure."""
+
+        cls = get_result_class(cls)
 
         # Because of fix_tree, this method assumes that the depth
         # and numchild properties in the nodes can be incorrect,
@@ -621,6 +673,8 @@ class MP_Node(Node):
                      their path
                   5. a list of ids nodes that report a wrong number of children
         """
+        cls = get_result_class(cls)
+
         evil_chars, bad_steplen, orphans = [], [], []
         wrong_depth, wrong_numchild = [], []
         for node in cls.objects.all():
@@ -694,6 +748,8 @@ class MP_Node(Node):
                in-place tree reordering, not available at the moment (hint:
                patches are welcome).
         """
+        cls = get_result_class(cls)
+
         if destructive:
             dump = cls.dump_bulk(None, True)
             cls.objects.all().delete()
@@ -742,8 +798,6 @@ class MP_Node(Node):
                 vals = [node_data[2], node_data[0]]
                 cursor.execute(sql, vals)
 
-            transaction.commit_unless_managed()
-
     @classmethod
     def get_tree(cls, object_id, parent=None):
         """
@@ -752,6 +806,8 @@ class MP_Node(Node):
             A *queryset* of nodes ordered as DFS, including the parent.
             If no parent is given, the entire tree is returned.
         """
+        cls = get_result_class(cls)
+
         if parent is None:
             # return the entire tree
             return cls.objects.filter(object_id=object_id)
@@ -765,9 +821,9 @@ class MP_Node(Node):
     def get_root_nodes(cls, object_id=None):
         """:returns: A queryset containing the root nodes in the tree."""
         if object_id:
-            return cls.objects.filter(depth=1, object_id=object_id)
+            return get_result_class(cls).objects.filter(depth=1, object_id=object_id)
         else:
-            return cls.objects.filter(depth=1)
+            return get_result_class(cls).objects.filter(depth=1)
 
     @classmethod
     def get_descendants_group_count(cls, parent=None):
@@ -797,6 +853,8 @@ class MP_Node(Node):
         # If there is a better way to do this in an UNMODIFIED django 1.0, let
         # me know.
         #~
+
+        cls = get_result_class(cls)
 
         if parent:
             depth = parent.depth + 1
@@ -829,7 +887,6 @@ class MP_Node(Node):
             node = cls(**dict(zip(field_names, node_data[:-2])))
             node.descendants_count = node_data[-1]
             ret.append(node)
-        transaction.commit_unless_managed()
         return ret
 
     def get_depth(self):
@@ -841,7 +898,8 @@ class MP_Node(Node):
         :returns: A queryset of all the node's siblings, including the node
             itself.
         """
-        qset = self.__class__.objects.filter(depth=self.depth, object_id=self.object_id)
+        qset = get_result_class(self.__class__).objects.filter(
+            depth=self.depth, object_id=self.object_id)
         if self.depth > 1:
             # making sure the non-root nodes share a parent
             parentpath = self._get_basepath(self.path, self.depth - 1)
@@ -852,12 +910,10 @@ class MP_Node(Node):
     def get_children(self):
         """:returns: A queryset of all the node's children"""
         if self.is_leaf():
-            return self.__class__.objects.none()
-        return self.__class__.objects.filter(
-            depth=self.depth + 1,
-            path__range=self._get_children_path_interval(self.path),
-            object_id=self.object_id,
-        )
+            return get_result_class(self.__class__).objects.none()
+        return get_result_class(self.__class__).objects.filter(
+            depth=self.depth + 1, object_id=self.object_id,
+            path__range=self._get_children_path_interval(self.path))
 
     def get_next_sibling(self):
         """
@@ -932,6 +988,9 @@ class MP_Node(Node):
         """
         Adds a child to the node.
 
+        This method saves the node in database. The object is populated as if via:
+            obj = self.__class__(**kwargs)
+
         :raise PathOverflow: when no more child nodes can be added
         """
         return MP_AddChildHandler(self, **kwargs).process()
@@ -940,6 +999,9 @@ class MP_Node(Node):
         """
         Adds a new node as a sibling to the current node object.
 
+        This method saves the node in database. The object is populated as if via:
+            obj = self.__class__(**kwargs)
+
         :raise PathOverflow: when the library can't make room for the
            node's new position
         """
@@ -947,7 +1009,12 @@ class MP_Node(Node):
 
     def get_root(self):
         """:returns: the root node for the current node object."""
-        return self.__class__.objects.get(path=self.path[0:self.steplen])
+        return get_result_class(self.__class__).objects.get(
+            path=self.path[0:self.steplen])
+
+    def is_root(self):
+        """:returns: True if the node is a root node (else, returns False)"""
+        return self.depth == 1
 
     def is_leaf(self):
         """:returns: True if the node is a leaf node (else, returns False)"""
@@ -962,7 +1029,8 @@ class MP_Node(Node):
             self.path[0:pos]
             for pos in range(0, len(self.path), self.steplen)[1:]
         ]
-        return self.__class__.objects.filter(path__in=paths, object_id=self.object_id).order_by('depth')
+        return get_result_class(self.__class__).objects.filter(
+            path__in=paths, object_id=self.object_id).order_by('depth')
 
     def get_parent(self, update=False):
         """
@@ -980,10 +1048,8 @@ class MP_Node(Node):
         except AttributeError:
             pass
         parentpath = self._get_basepath(self.path, depth - 1)
-        self._cached_parent_obj = self.__class__.objects.get(
-            path=parentpath,
-            object_id=self.object_id,
-        )
+        self._cached_parent_obj = get_result_class(self.__class__).objects.get(
+            path=parentpath, object_id=self.object_id)
         return self._cached_parent_obj
 
     def move(self, target, pos=None):
@@ -1014,9 +1080,11 @@ class MP_Node(Node):
         """
         parentpath = cls._get_basepath(path, depth - 1)
         key = cls._int2str(newstep)
-        return '%s%s%s' % (parentpath,
-                           '0' * (cls.steplen - len(key)),
-                           key)
+        return '{0}{1}{2}'.format(
+            parentpath,
+            cls.alphabet[0] * (cls.steplen - len(key)),
+            key
+        )
 
     def _inc_path(self):
         """:returns: The path of the next sibling of a given node path."""
@@ -1024,9 +1092,11 @@ class MP_Node(Node):
         key = self._int2str(newpos)
         if len(key) > self.steplen:
             raise PathOverflow(_("Path Overflow from: '%s'" % (self.path, )))
-        return '%s%s%s' % (self.path[:-self.steplen],
-                           '0' * (self.steplen - len(key)),
-                           key)
+        return '{0}{1}{2}'.format(
+            self.path[:-self.steplen],
+            self.alphabet[0] * (self.steplen - len(key)),
+            key
+        )
 
     def _get_lastpos_in_path(self):
         """:returns: The integer value of the last step in a path."""

@@ -21,14 +21,22 @@ from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext_lazy as _
 
 
+if sys.version < '3':
+    import codecs
+
+    def u(x):
+        return codecs.unicode_escape_decode(x)[0]
+else:
+    def u(x):
+        return x
+
 register = Library()
 
 if sys.version_info >= (3, 0):
-    from django.utils.encoding import force_str, smart_str
+    from django.utils.encoding import force_str
     from urllib.parse import urljoin
 else:
     from django.utils.encoding import force_unicode as force_str
-    from django.utils.encoding import smart_unicode as smart_str
     from urlparse import urljoin
 
 
@@ -146,7 +154,7 @@ def items_for_result(cl, result, form):
                 ' onclick="opener.dismissRelatedLookupPopup(window, %s);'
                 ' return false;"')
             yield mark_safe(
-                '%s<%s%s>%s %s <a href="%s"%s>%s</a></%s>' % (
+                u('%s<%s%s>%s %s <a href="%s"%s>%s</a></%s>') % (
                     drag_handler, table_tag, row_class, spacer, collapse, url,
                     (cl.is_popup and onclickstr % result_id or ''),
                     conditional_escape(result_repr), table_tag))
@@ -154,14 +162,19 @@ def items_for_result(cl, result, form):
             # By default the fields come from ModelAdmin.list_editable, but if
             # we pull the fields out of the form instead of list_editable
             # custom admins can provide fields on a per request basis
-            if (form and field_name in form.fields and not (
-                    field_name == cl.model._meta.pk.name and
-                        form[cl.model._meta.pk.name].is_hidden)):
+            if (
+                    form and
+                    field_name in form.fields and
+                    not (
+                        field_name == cl.model._meta.pk.name and
+                        form[cl.model._meta.pk.name].is_hidden
+                    )
+            ):
                 bf = form[field_name]
                 result_repr = mark_safe(force_str(bf.errors) + force_str(bf))
-            yield format_html('<td{0}>{1}</td>', row_class, result_repr)
+            yield format_html(u('<td{0}>{1}</td>'), row_class, result_repr)
     if form and not form[cl.model._meta.pk.name].is_hidden:
-        yield format_html('<td>{0}</td>',
+        yield format_html(u('<td>{0}</td>'),
                           force_str(form[cl.model._meta.pk.name]))
 
 
