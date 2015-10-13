@@ -354,12 +354,14 @@ class MP_AddChildHandler(MP_AddHandler):
             # the node had no children, adding the first child
             newobj.path = self.node_cls._get_path(
                 self.node.path, newobj.depth, 1)
-            max_length = self.node_cls._meta.get_field('path').max_length
-            if len(newobj.path) > max_length:
-                raise PathOverflow(
-                    _('The new node is too deep in the tree, try'
-                      ' increasing the path.max_length property'
-                      ' and UPDATE your database'))
+
+            # now we use Text instead varchar and this is extra check
+            # max_length = self.node_cls._meta.get_field('path').max_length
+            # if len(newobj.path) > max_length:
+            #     raise PathOverflow(
+            #         _('The new node is too deep in the tree, try'
+            #           ' increasing the path.max_length property'
+            #           ' and UPDATE your database'))
         else:
             # adding the new child as the last one
             newobj.path = self.node.get_last_child()._inc_path()
