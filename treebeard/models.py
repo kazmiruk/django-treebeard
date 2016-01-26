@@ -7,7 +7,7 @@ if sys.version_info >= (3, 0):
     from functools import reduce
 
 from django.db.models import Q
-from django.db import models, router, connections
+from django.db import models, transaction, router, connections
 
 from treebeard.exceptions import InvalidPosition, MissingNodeOrderBy
 

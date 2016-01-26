@@ -37,8 +37,8 @@ source_suffix = '.rst'
 master_doc = 'index'
 project = 'django-treebeard'
 copyright = '2008-2015, Gustavo Picon'
-version = '3.0'
-release = '3.0'
+version = '4.0'
+release = '4.0'
 exclude_trees = ['_build']
 pygments_style = 'sphinx'
 html_theme = 'default'
@@ -53,7 +53,7 @@ latex_documents = [(
 intersphinx_mapping = {
     'python': ('http://docs.python.org/3', None),
     'django': (
-        'https://docs.djangoproject.com/en/1.6/',
-        'https://docs.djangoproject.com/en/1.6/_objects/'
+        'https://docs.djangoproject.com/en/1.7/',
+        'https://docs.djangoproject.com/en/1.7/_objects/'
     ),
 }

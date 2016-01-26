@@ -42,8 +42,7 @@ def get_db_conf():
             }[engine]
         if engine == 'django.db.backends.mysql':
             conf['OPTIONS'] = {
-                'init_command': 'SET storage_engine=INNODB,'
-                                'character_set_connection=utf8,'
+                'init_command': 'SET character_set_connection=utf8,'
                                 'collation_connection=utf8_unicode_ci'}
     set_test_db_name(conf, test_name)
     return conf
@@ -61,6 +60,18 @@ def set_test_db_name(conf, test_name):
 
 DATABASES = {'default': get_db_conf()}
 SECRET_KEY = '7r33b34rd'
+
+
+class DisableMigrations(object):
+
+    def __contains__(self, item):
+        return True
+
+    def __getitem__(self, item):
+        return "notmigrations"
+
+
+MIGRATION_MODULES = DisableMigrations()
 
 INSTALLED_APPS = [
     'django.contrib.auth',

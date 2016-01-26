@@ -7,7 +7,7 @@ if sys.version_info >= (3, 0):
     from functools import reduce
 
 from django.core import serializers
-from django.db import models, connection, IntegrityError
+from django.db import models, transaction, connection, IntegrityError
 from django.db.models import F, Q
 from django.utils.translation import ugettext_noop as _
 
@@ -94,7 +94,7 @@ class MP_NodeQuerySet(models.query.QuerySet):
         # Django will handle this as a SELECT and then a DELETE of
         # ids, and will deal with removing related objects
         if toremove:
-            qset = self.model.objects.filter(reduce(operator.or_, toremove))
+            qset = get_result_class(self.model).objects.filter(reduce(operator.or_, toremove))
             super(MP_NodeQuerySet, qset).delete()
 
 
@@ -732,7 +732,7 @@ class MP_Node(Node):
         :param destructive:
 
             A boolean value. If True, a more agressive fix_tree method will be
-            attemped. If False (the default), it will use a safe (and fast!)
+            attempted. If False (the default), it will use a safe (and fast!)
             fix approach, but it will only solve the ``depth`` and
             ``numchild`` nodes, it won't fix the tree holes or broken path
             ordering.
@@ -815,17 +815,17 @@ class MP_Node(Node):
             return cls.objects.filter(object_id=object_id)
         if parent.is_leaf():
             return cls.objects.filter(pk=parent.pk)
-        return cls.objects.filter(path__startswith=parent.path,
-                                  depth__gte=parent.depth,
-                                  object_id=object_id)
+        return cls.objects.filter(path__startswith=parent.path, depth__gte=parent.depth, object_id=object_id)
 
     @classmethod
     def get_root_nodes(cls, object_id=None):
         """:returns: A queryset containing the root nodes in the tree."""
+        qs = get_result_class(cls).objects.filter(depth=1)
+
         if object_id:
-            return get_result_class(cls).objects.filter(depth=1, object_id=object_id)
-        else:
-            return get_result_class(cls).objects.filter(depth=1)
+            qs = qs.filter(object_id=object_id)
+
+        return qs
 
     @classmethod
     def get_descendants_group_count(cls, parent=None):
@@ -900,8 +900,7 @@ class MP_Node(Node):
         :returns: A queryset of all the node's siblings, including the node
             itself.
         """
-        qset = get_result_class(self.__class__).objects.filter(
-            depth=self.depth, object_id=self.object_id)
+        qset = get_result_class(self.__class__).objects.filter(depth=self.depth, object_id=self.object_id)
         if self.depth > 1:
             # making sure the non-root nodes share a parent
             parentpath = self._get_basepath(self.path, self.depth - 1)

@@ -1,7 +1,8 @@
+{% load cycle from future  %}
 {% if results %}
     <ul>
         {% for result in results %}
-            <li class="{{ loop.cycle('row1', 'row2') }}">{{ result }}</li>
+            <li class="{% cycle 'row1' 'row2' %}">{{ result }}</li>
         {% endfor %}
     </ul>
 {% endif %}
